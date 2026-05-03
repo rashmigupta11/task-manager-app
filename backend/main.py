@@ -2,17 +2,17 @@ import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from dotenv import load_dotenv
 
-import models, schemas
+from backend import models, schemas
 from backend.database import engine, get_db
 from backend.auth import hash_password, verify_password
 
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+load_dotenv()
 
 # Create all tables on startup (idempotent — safe to run every time)
 models.Base.metadata.create_all(bind=engine)
@@ -35,11 +35,13 @@ def get_user_or_404(user_id: int, db: Session) -> models.User:
         raise HTTPException(404, "User not found")
     return user
 
+
 def get_project_or_404(project_id: int, db: Session) -> models.Project:
     p = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not p:
         raise HTTPException(404, "Project not found")
     return p
+
 
 def get_task_or_404(task_id: int, db: Session) -> models.Task:
     t = db.query(models.Task).filter(models.Task.id == task_id).first()
@@ -47,8 +49,8 @@ def get_task_or_404(task_id: int, db: Session) -> models.Task:
         raise HTTPException(404, "Task not found")
     return t
 
+
 def is_project_admin(project_id: int, user_id: int, db: Session) -> bool:
-    """Returns True if user is project owner OR has admin role in this project."""
     project = get_project_or_404(project_id, db)
     if project.owner_id == user_id:
         return True
@@ -59,8 +61,8 @@ def is_project_admin(project_id: int, user_id: int, db: Session) -> bool:
     ).first()
     return member is not None
 
+
 def is_project_member(project_id: int, user_id: int, db: Session) -> bool:
-    """Returns True if user is owner or any kind of member."""
     project = get_project_or_404(project_id, db)
     if project.owner_id == user_id:
         return True
@@ -69,6 +71,7 @@ def is_project_member(project_id: int, user_id: int, db: Session) -> bool:
         models.ProjectMember.user_id    == user_id,
     ).first()
     return member is not None
+
 
 def build_task_out(task: models.Task) -> dict:
     return {
@@ -99,14 +102,11 @@ def root():
 
 @app.post("/auth/signup", response_model=schemas.UserOut)
 def signup(payload: schemas.UserCreate, db: Session = Depends(get_db)):
-    # Check username
     if db.query(models.User).filter(models.User.username == payload.username).first():
         raise HTTPException(400, "Username already taken")
-    # Check email
     if db.query(models.User).filter(models.User.email == payload.email).first():
         raise HTTPException(400, "Email already registered")
 
-    # First user ever → global admin
     count = db.query(func.count(models.User.id)).scalar()
     role  = models.RoleEnum.admin if count == 0 else models.RoleEnum.member
 
@@ -148,9 +148,11 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 @app.patch("/users/{user_id}/role")
 def change_global_role(
     user_id: int,
-    role: str = Query(..., regex="^(admin|member)$"),
+    role: str = Query(...),
     db: Session = Depends(get_db),
 ):
+    if role not in ("admin", "member"):
+        raise HTTPException(400, "Role must be admin or member")
     user = get_user_or_404(user_id, db)
     user.role = models.RoleEnum(role)
     db.commit()
@@ -161,22 +163,27 @@ def change_global_role(
 
 @app.get("/projects", response_model=List[schemas.ProjectOut])
 def list_projects(user_id: int = Query(...), db: Session = Depends(get_db)):
-    """Return all projects this user owns or is a member of."""
     user = get_user_or_404(user_id, db)
 
-    # Global admins see all projects
     if user.role == models.RoleEnum.admin:
         return db.query(models.Project).order_by(models.Project.created_at.desc()).all()
 
-    owned = db.query(models.Project).filter(models.Project.owner_id == user_id)
     member_project_ids = [
         m.project_id for m in
-        db.query(models.ProjectMember).filter(models.ProjectMember.user_id == user_id).all()
+        db.query(models.ProjectMember).filter(
+            models.ProjectMember.user_id == user_id
+        ).all()
     ]
-    member_projects = db.query(models.Project).filter(
-        models.Project.id.in_(member_project_ids)
-    )
-    return owned.union(member_projects).order_by(models.Project.created_at.desc()).all()
+    owned = [
+        p for p in
+        db.query(models.Project).filter(models.Project.owner_id == user_id).all()
+    ]
+    owned_ids = [p.id for p in owned]
+    all_ids = list(set(member_project_ids + owned_ids))
+
+    return db.query(models.Project).filter(
+        models.Project.id.in_(all_ids)
+    ).order_by(models.Project.created_at.desc()).all()
 
 
 @app.post("/projects", response_model=schemas.ProjectOut)
@@ -195,7 +202,6 @@ def create_project(
     db.commit()
     db.refresh(project)
 
-    # Auto-add owner as admin member so they show up in member lists
     membership = models.ProjectMember(
         project_id = project.id,
         user_id    = owner_id,
@@ -236,7 +242,6 @@ def delete_project(
 ):
     project = get_project_or_404(project_id, db)
     user    = get_user_or_404(user_id, db)
-    # Only project owner OR global admin can delete
     if project.owner_id != user_id and user.role != models.RoleEnum.admin:
         raise HTTPException(403, "Only the project owner can delete this project")
     db.delete(project)
@@ -252,17 +257,17 @@ def get_members(project_id: int, db: Session = Depends(get_db)):
     members = db.query(models.ProjectMember).filter(
         models.ProjectMember.project_id == project_id
     ).all()
-    result = []
-    for m in members:
-        result.append({
+    return [
+        {
             "id":        m.id,
             "user_id":   m.user_id,
             "full_name": m.user.full_name,
             "username":  m.user.username,
             "role":      m.role,
             "joined_at": m.joined_at,
-        })
-    return result
+        }
+        for m in members
+    ]
 
 
 @app.post("/projects/{project_id}/members")
@@ -275,7 +280,9 @@ def add_member(
     if not is_project_admin(project_id, user_id, db):
         raise HTTPException(403, "Only project admins can add members")
 
-    target = db.query(models.User).filter(models.User.username == payload.username).first()
+    target = db.query(models.User).filter(
+        models.User.username == payload.username
+    ).first()
     if not target:
         raise HTTPException(404, f"User '{payload.username}' not found")
 
@@ -336,8 +343,7 @@ def get_tasks(
         q = q.filter(models.Task.status == status)
     if priority:
         q = q.filter(models.Task.priority == priority)
-    tasks = q.order_by(models.Task.created_at.desc()).all()
-    return [build_task_out(t) for t in tasks]
+    return [build_task_out(t) for t in q.order_by(models.Task.created_at.desc()).all()]
 
 
 @app.post("/projects/{project_id}/tasks")
@@ -350,7 +356,6 @@ def create_task(
     if not is_project_member(project_id, user_id, db):
         raise HTTPException(403, "You are not a member of this project")
 
-    # Validate assignee is a project member
     if payload.assignee_id:
         if not is_project_member(project_id, payload.assignee_id, db):
             raise HTTPException(400, "Assignee must be a project member")
@@ -386,9 +391,7 @@ def update_task(
     if task.project_id != project_id:
         raise HTTPException(404, "Task not found in this project")
 
-    # Members can only update their own tasks unless they're project admin
     if not is_project_admin(project_id, user_id, db) and task.created_by != user_id:
-        # But members can update status/assignee of tasks assigned to them
         if task.assignee_id != user_id:
             raise HTTPException(403, "You can only update tasks you created or are assigned to")
 
@@ -478,12 +481,18 @@ def delete_comment(
     user_id: int = Query(...),
     db: Session = Depends(get_db),
 ):
-    comment = db.query(models.Comment).filter(models.Comment.id == comment_id).first()
+    comment = db.query(models.Comment).filter(
+        models.Comment.id == comment_id
+    ).first()
     if not comment or comment.task_id != task_id:
         raise HTTPException(404, "Comment not found")
     task = get_task_or_404(task_id, db)
     user = get_user_or_404(user_id, db)
-    if comment.author_id != user_id and not is_project_admin(task.project_id, user_id, db) and user.role != models.RoleEnum.admin:
+    if (
+        comment.author_id != user_id
+        and not is_project_admin(task.project_id, user_id, db)
+        and user.role != models.RoleEnum.admin
+    ):
         raise HTTPException(403, "Cannot delete this comment")
     db.delete(comment)
     db.commit()
@@ -498,7 +507,6 @@ def dashboard(user_id: int = Query(...), db: Session = Depends(get_db)):
     now  = datetime.now(timezone.utc)
 
     if user.role == models.RoleEnum.admin:
-        # Global admin sees everything
         all_tasks    = db.query(models.Task).all()
         all_projects = db.query(models.Project).all()
     else:
@@ -514,7 +522,7 @@ def dashboard(user_id: int = Query(...), db: Session = Depends(get_db)):
                 models.Project.owner_id == user_id
             ).all()
         ]
-        visible_ids = list(set(member_project_ids + owned_ids))
+        visible_ids  = list(set(member_project_ids + owned_ids))
         all_tasks    = db.query(models.Task).filter(
             models.Task.project_id.in_(visible_ids)
         ).all()
@@ -524,14 +532,13 @@ def dashboard(user_id: int = Query(...), db: Session = Depends(get_db)):
 
     overdue = [
         t for t in all_tasks
-        if t.due_date and t.due_date.replace(tzinfo=timezone.utc) < now
+        if t.due_date
+        and t.due_date.replace(tzinfo=timezone.utc) < now
         and t.status != models.StatusEnum.done
     ]
 
     my_tasks = [t for t in all_tasks if t.assignee_id == user_id]
-
-    # Recent activity: last 10 tasks updated
-    recent = sorted(all_tasks, key=lambda t: t.updated_at, reverse=True)[:10]
+    recent   = sorted(all_tasks, key=lambda t: t.updated_at, reverse=True)[:10]
 
     return {
         "total_projects":   len(all_projects),
