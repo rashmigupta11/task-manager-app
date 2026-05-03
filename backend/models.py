@@ -37,12 +37,11 @@ class User(Base):
     is_active  = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # relationships
-    owned_projects   = relationship("Project",        back_populates="owner",        foreign_keys="Project.owner_id")
-    memberships      = relationship("ProjectMember",  back_populates="user")
-    assigned_tasks   = relationship("Task",           back_populates="assignee",     foreign_keys="Task.assignee_id")
-    created_tasks    = relationship("Task",           back_populates="creator",      foreign_keys="Task.created_by")
-    comments         = relationship("Comment",        back_populates="author")
+    owned_projects = relationship("Project",       back_populates="owner",        foreign_keys="Project.owner_id")
+    memberships    = relationship("ProjectMember", back_populates="user")
+    assigned_tasks = relationship("Task",          back_populates="assignee",     foreign_keys="Task.assignee_id")
+    created_tasks  = relationship("Task",          back_populates="creator",      foreign_keys="Task.created_by")
+    comments       = relationship("Comment",       back_populates="author")
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
@@ -58,10 +57,10 @@ class Project(Base):
 
     owner   = relationship("User",          back_populates="owned_projects", foreign_keys=[owner_id])
     members = relationship("ProjectMember", back_populates="project",        cascade="all, delete-orphan")
-    tasks   = relationship("Task",          back_populates="project",         cascade="all, delete-orphan")
+    tasks   = relationship("Task",          back_populates="project",        cascade="all, delete-orphan")
 
 
-# ── Project Members (join table with extra data) ──────────────────────────────
+# ── Project Members ───────────────────────────────────────────────────────────
 class ProjectMember(Base):
     __tablename__ = "project_members"
 
@@ -102,8 +101,8 @@ class Comment(Base):
     __tablename__ = "comments"
 
     id         = Column(Integer, primary_key=True, index=True)
-    task_id    = Column(Integer, ForeignKey("tasks.id",    ondelete="CASCADE"), nullable=False)
-    author_id  = Column(Integer, ForeignKey("users.id"),   nullable=False)
+    task_id    = Column(Integer, ForeignKey("tasks.id",  ondelete="CASCADE"), nullable=False)
+    author_id  = Column(Integer, ForeignKey("users.id"), nullable=False)
     content    = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
