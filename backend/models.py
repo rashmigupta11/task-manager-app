@@ -3,7 +3,7 @@ from sqlalchemy import (
     DateTime, Enum, Boolean, func
 )
 from sqlalchemy.orm import relationship
-from database import Base
+from backend.database import Base
 import enum
 
 
