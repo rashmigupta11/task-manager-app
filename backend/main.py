@@ -9,8 +9,8 @@ from sqlalchemy import func
 from dotenv import load_dotenv
 
 import models, schemas
-from database import engine, get_db
-from auth import hash_password, verify_password
+from backend.database import engine, get_db
+from backend.auth import hash_password, verify_password
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
